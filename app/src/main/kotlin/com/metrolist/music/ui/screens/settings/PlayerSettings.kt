@@ -64,6 +64,8 @@ import com.metrolist.music.constants.ResumeOnBluetoothConnectKey
 import com.metrolist.music.constants.SeekExtraSeconds
 import com.metrolist.music.constants.ShufflePlaylistFirstKey
 import com.metrolist.music.constants.SimilarContent
+import com.metrolist.music.constants.SilenceTrimMode
+import com.metrolist.music.constants.SilenceTrimModeKey
 import com.metrolist.music.constants.SkipSilenceInstantKey
 import com.metrolist.music.constants.SkipSilenceKey
 import com.metrolist.music.constants.StopMusicOnTaskClearKey
@@ -122,6 +124,10 @@ fun PlayerSettings(
     val (skipSilenceInstant, onSkipSilenceInstantChange) = rememberPreference(
         SkipSilenceInstantKey,
         defaultValue = false
+    )
+    val (silenceTrimMode, onSilenceTrimModeChange) = rememberEnumPreference(
+        SilenceTrimModeKey,
+        defaultValue = SilenceTrimMode.ALL,
     )
     val (audioNormalization, onAudioNormalizationChange) = rememberPreference(
         AudioNormalizationKey,
@@ -231,6 +237,10 @@ fun PlayerSettings(
         mutableStateOf(false)
     }
 
+    var showSilenceTrimModeDialog by remember {
+        mutableStateOf(false)
+    }
+
     if (showAudioQualityDialog) {
         EnumDialog(
             onDismiss = { showAudioQualityDialog = false },
@@ -248,6 +258,25 @@ fun PlayerSettings(
                     AudioQuality.LOW -> stringResource(R.string.audio_quality_low)
                 }
             }
+        )
+    }
+
+    if (showSilenceTrimModeDialog) {
+        EnumDialog(
+            onDismiss = { showSilenceTrimModeDialog = false },
+            onSelect = {
+                onSilenceTrimModeChange(it)
+                showSilenceTrimModeDialog = false
+            },
+            title = stringResource(R.string.silence_trimming_behavior),
+            current = silenceTrimMode,
+            values = SilenceTrimMode.entries,
+            valueText = {
+                when (it) {
+                    SilenceTrimMode.ALL -> stringResource(R.string.silence_trimming_all)
+                    SilenceTrimMode.EDGES -> stringResource(R.string.silence_trimming_edges)
+                }
+            },
         )
     }
 
@@ -394,28 +423,44 @@ fun PlayerSettings(
                     },
                     onClick = { onSkipSilenceChange(!skipSilence) }
                 ))
-                add(Material3SettingsItem(
-                    icon = painterResource(R.drawable.skip_next),
-                    title = { Text(stringResource(R.string.skip_silence_instant)) },
-                    description = { Text(stringResource(R.string.skip_silence_instant_desc)) },
-                    trailingContent = {
-                        Switch(
-                            checked = skipSilenceInstant,
-                            onCheckedChange = { onSkipSilenceInstantChange(it) },
-                            enabled = skipSilence,
-                            thumbContent = {
-                                Icon(
-                                    painter = painterResource(
-                                        id = if (skipSilenceInstant) R.drawable.check else R.drawable.close
-                                    ),
-                                    contentDescription = null,
-                                    modifier = Modifier.size(SwitchDefaults.IconSize)
-                                )
-                            }
-                        )
-                    },
-                    onClick = { if (skipSilence) onSkipSilenceInstantChange(!skipSilenceInstant) }
-                ))
+                if (skipSilence) {
+                    add(Material3SettingsItem(
+                        icon = painterResource(R.drawable.fast_forward),
+                        title = { Text(stringResource(R.string.silence_trimming_behavior)) },
+                        description = {
+                            Text(
+                                when (silenceTrimMode) {
+                                    SilenceTrimMode.ALL -> stringResource(R.string.silence_trimming_all_desc)
+                                    SilenceTrimMode.EDGES -> stringResource(R.string.silence_trimming_edges_desc)
+                                },
+                            )
+                        },
+                        onClick = { showSilenceTrimModeDialog = true },
+                    ))
+                }
+                if (skipSilence && silenceTrimMode == SilenceTrimMode.ALL) {
+                    add(Material3SettingsItem(
+                        icon = painterResource(R.drawable.skip_next),
+                        title = { Text(stringResource(R.string.skip_silence_instant)) },
+                        description = { Text(stringResource(R.string.skip_silence_instant_desc)) },
+                        trailingContent = {
+                            Switch(
+                                checked = skipSilenceInstant,
+                                onCheckedChange = onSkipSilenceInstantChange,
+                                thumbContent = {
+                                    Icon(
+                                        painter = painterResource(
+                                            id = if (skipSilenceInstant) R.drawable.check else R.drawable.close
+                                        ),
+                                        contentDescription = null,
+                                        modifier = Modifier.size(SwitchDefaults.IconSize)
+                                    )
+                                }
+                            )
+                        },
+                        onClick = { onSkipSilenceInstantChange(!skipSilenceInstant) }
+                    ))
+                }
                 add(Material3SettingsItem(
                     icon = painterResource(R.drawable.volume_up),
                     title = { Text(stringResource(R.string.audio_normalization)) },

@@ -162,6 +162,11 @@
     <string name="skip_silence_desc">Fast-forward through silent parts of songs</string>
     <string name="skip_silence_instant">Instantly skip silence</string>
     <string name="skip_silence_instant_desc">Jump ahead during silent moments instead of speeding up playback</string>
+    <string name="silence_trimming_behavior">Silence trimming behavior</string>
+    <string name="silence_trimming_all">All silence</string>
+    <string name="silence_trimming_all_desc">Trim silent parts anywhere in songs</string>
+    <string name="silence_trimming_edges">Start and end only</string>
+    <string name="silence_trimming_edges_desc">Trim silence at track boundaries while preserving pauses inside songs</string>
 
     <string name="advanced_login">Log in with token</string>
     <string name="token_hidden">Tap to show token</string>

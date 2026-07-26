@@ -163,6 +163,8 @@ import com.metrolist.music.constants.ShowLyricsKey
 import com.metrolist.music.constants.ShuffleModeKey
 import com.metrolist.music.constants.ShufflePlaylistFirstKey
 import com.metrolist.music.constants.SimilarContent
+import com.metrolist.music.constants.SilenceTrimMode
+import com.metrolist.music.constants.SilenceTrimModeKey
 import com.metrolist.music.constants.SkipSilenceInstantKey
 import com.metrolist.music.constants.SkipSilenceKey
 import com.metrolist.music.constants.StopMusicOnTaskClearKey
@@ -196,6 +198,7 @@ import com.metrolist.music.models.PersistQueue
 import com.metrolist.music.models.toMediaMetadata
 import com.metrolist.music.playback.alarm.MusicAlarmScheduler
 import com.metrolist.music.playback.alarm.MusicAlarmStore
+import com.metrolist.music.playback.audio.EdgeSilenceTrimmingAudioProcessor
 import com.metrolist.music.playback.audio.SilenceDetectorAudioProcessor
 import com.metrolist.music.playback.queues.EmptyQueue
 import com.metrolist.music.playback.queues.ListQueue
@@ -411,6 +414,7 @@ class MusicService :
     val playerFlow = _playerFlow.asStateFlow()
 
     private val playerSilenceProcessors = HashMap<Player, SilenceDetectorAudioProcessor>()
+    private val playerEdgeSilenceProcessors = HashMap<Player, EdgeSilenceTrimmingAudioProcessor>()
 
     private val instantSilenceSkipEnabled = MutableStateFlow(false)
 
@@ -887,13 +891,23 @@ class MusicService :
         }
 
         dataStore.data
-            .map { (it[SkipSilenceKey] ?: false) to (it[SkipSilenceInstantKey] ?: false) }
+            .map {
+                Triple(
+                    it[SkipSilenceKey] ?: false,
+                    it[SkipSilenceInstantKey] ?: false,
+                    it[SilenceTrimModeKey].toEnum(SilenceTrimMode.ALL),
+                )
+            }
             .distinctUntilChanged()
-            .collectLatest(scope) { (skipSilence, instantSkip) ->
-                player.skipSilenceEnabled = skipSilence
-                secondaryPlayer?.skipSilenceEnabled = skipSilence
+            .collectLatest(scope) { (skipSilence, instantSkip, trimMode) ->
+                val trimAllSilence = skipSilence && trimMode == SilenceTrimMode.ALL
+                player.skipSilenceEnabled = trimAllSilence
+                secondaryPlayer?.skipSilenceEnabled = trimAllSilence
+                playerEdgeSilenceProcessors.values.forEach {
+                    it.enabled = skipSilence && trimMode == SilenceTrimMode.EDGES
+                }
 
-                val enableInstant = skipSilence && instantSkip
+                val enableInstant = trimAllSilence && instantSkip
                 instantSilenceSkipEnabled.value = enableInstant
 
                 playerSilenceProcessors.values.forEach { processor ->
@@ -963,6 +977,7 @@ class MusicService :
                 sleepTimer?.let { player.removeListener(it) }
                 playerNormalizationProcessors.remove(player)
                 playerSilenceProcessors.remove(player)
+                playerEdgeSilenceProcessors.remove(player)
                 player.release()
 
                 val newPlayer = createExoPlayer()
@@ -1301,18 +1316,23 @@ class MusicService :
         equalizerService.addAudioProcessor(eqProcessor)
 
         val silenceProcessor = SilenceDetectorAudioProcessor { handleLongSilenceDetected() }
+        val edgeSilenceProcessor = EdgeSilenceTrimmingAudioProcessor()
 
         // Set initial state — use pre-read prefs when available, otherwise fall back to DataStore
         val useAudioTrackPlaybackParams = if (prefs != null) {
             val skipSilence = prefs[SkipSilenceKey] ?: false
             val instantSkip = prefs[SkipSilenceInstantKey] ?: false
-            silenceProcessor.instantModeEnabled = skipSilence && instantSkip
+            val trimMode = prefs[SilenceTrimModeKey].toEnum(SilenceTrimMode.ALL)
+            silenceProcessor.instantModeEnabled = skipSilence && instantSkip && trimMode == SilenceTrimMode.ALL
+            edgeSilenceProcessor.enabled = skipSilence && trimMode == SilenceTrimMode.EDGES
             prefs[AudioTrackPlaybackParamsKey] ?: true
         } else {
             runBlocking {
                 val skipSilence = dataStore.get(SkipSilenceKey, false)
                 val instantSkip = dataStore.get(SkipSilenceInstantKey, false)
-                silenceProcessor.instantModeEnabled = skipSilence && instantSkip
+                val trimMode = dataStore.get(SilenceTrimModeKey, SilenceTrimMode.ALL.name).toEnum(SilenceTrimMode.ALL)
+                silenceProcessor.instantModeEnabled = skipSilence && instantSkip && trimMode == SilenceTrimMode.ALL
+                edgeSilenceProcessor.enabled = skipSilence && trimMode == SilenceTrimMode.EDGES
                 dataStore.get(AudioTrackPlaybackParamsKey, true)
             }
         }
@@ -1321,7 +1341,15 @@ class MusicService :
             ExoPlayer
                 .Builder(this)
                 .setMediaSourceFactory(createMediaSourceFactory())
-                .setRenderersFactory(createRenderersFactory(normalizationProcessor, eqProcessor, silenceProcessor, useAudioTrackPlaybackParams))
+                .setRenderersFactory(
+                    createRenderersFactory(
+                        normalizationProcessor,
+                        eqProcessor,
+                        silenceProcessor,
+                        edgeSilenceProcessor,
+                        useAudioTrackPlaybackParams,
+                    ),
+                )
                 .setLoadControl(
                     // Start playback once ~750ms is buffered (media3's default is 1000ms) so first
                     // audio is audible a touch sooner. min/max/after-rebuffer match the media3 1.x
@@ -1345,21 +1373,31 @@ class MusicService :
                 .setDeviceVolumeControlEnabled(true)
                 .build()
 
+        player.addListener(
+            object : Player.Listener {
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    edgeSilenceProcessor.resetForNewTrack()
+                }
+            },
+        )
         playerNormalizationProcessors[player] = normalizationProcessor
         playerSilenceProcessors[player] = silenceProcessor
+        playerEdgeSilenceProcessors[player] = edgeSilenceProcessor
 
         if (prefs != null) {
             val offload = prefs[AudioOffload] ?: false
             val crossfade = prefs[CrossfadeEnabledKey] ?: false
             player.setOffloadEnabled(if (crossfade) false else offload)
-            player.skipSilenceEnabled = prefs[SkipSilenceKey] ?: false
+            val trimMode = prefs[SilenceTrimModeKey].toEnum(SilenceTrimMode.ALL)
+            player.skipSilenceEnabled = (prefs[SkipSilenceKey] ?: false) && trimMode == SilenceTrimMode.ALL
         } else {
             player.apply {
                 runBlocking {
                     val offload = dataStore.get(AudioOffload, false)
                     val crossfade = dataStore.get(CrossfadeEnabledKey, false)
                     setOffloadEnabled(if (crossfade) false else offload)
-                    skipSilenceEnabled = dataStore.get(SkipSilenceKey, false)
+                    val trimMode = dataStore.get(SilenceTrimModeKey, SilenceTrimMode.ALL.name).toEnum(SilenceTrimMode.ALL)
+                    skipSilenceEnabled = dataStore.get(SkipSilenceKey, false) && trimMode == SilenceTrimMode.ALL
                 }
             }
         }
@@ -3788,6 +3826,7 @@ class MusicService :
         normalizationProcessor: VolumeNormalizationAudioProcessor,
         eqProcessor: CustomEqualizerAudioProcessor,
         silenceProcessor: SilenceDetectorAudioProcessor,
+        edgeSilenceProcessor: EdgeSilenceTrimmingAudioProcessor,
         useAudioTrackPlaybackParams: Boolean,
     ) = object : DefaultRenderersFactory(this) {
         override fun buildAudioRenderers(
@@ -3848,6 +3887,7 @@ class MusicService :
                         normalizationProcessor,
                         eqProcessor,
                         silenceProcessor,
+                        edgeSilenceProcessor,
                     ),
                     SilenceSkippingAudioProcessor(2_000_000, 20_000, 256),
                     SonicAudioProcessor(),
@@ -4112,6 +4152,7 @@ class MusicService :
         sleepTimer?.let { player.removeListener(it) }
         playerNormalizationProcessors.remove(player)
         playerSilenceProcessors.remove(player)
+        playerEdgeSilenceProcessors.remove(player)
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
         player.release()

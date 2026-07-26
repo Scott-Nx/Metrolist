@@ -125,6 +125,13 @@ val RememberShuffleAndRepeatKey = booleanPreferencesKey("rememberShuffleAndRepea
 val ShuffleModeKey = booleanPreferencesKey("shuffleMode")
 val SkipSilenceKey = booleanPreferencesKey("skipSilence")
 val SkipSilenceInstantKey = booleanPreferencesKey("skipSilenceInstant")
+val SilenceTrimModeKey = stringPreferencesKey("silenceTrimMode")
+
+enum class SilenceTrimMode {
+    ALL,
+    EDGES,
+}
+
 val AudioNormalizationKey = booleanPreferencesKey("audioNormalization")
 
 val LoudnessLevelKey = stringPreferencesKey("loudnessLevel")
